@@ -6,87 +6,60 @@ import csv
 import re
 import os
 import shutil
+import importlib.util
 from pathlib import Path
 
-
 # ============================================================
-# USER CONFIGURATION
+# PROJECT CONFIGURATION
 # ============================================================
-
-import os
-
-PDK_ROOT = Path(
-    os.environ.get("PDK_ROOT", "")
-)
-
-LIB_ROOT = (
-    PDK_ROOT
-    / "share"
-    / "pdk"
-    / "sky130A"
-    / "libs.ref"
-)
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-
-RTL_FILE = None
-SDC_FILE = None
-TOP_MODULE = None
 
 OUTPUT_DIR = PROJECT_ROOT / "results"
 
 YOSYS = "yosys"
 STA = "sta"
 
-# ============================================================
-# LIBRARY CONFIGURATION
-# ============================================================
-
-LIBRARIES = {
-    "hs": "sky130_fd_sc_hs",
-    "hd": "sky130_fd_sc_hd",
-    "hdll": "sky130_fd_sc_hdll",
-    "ms": "sky130_fd_sc_ms",
-    "ls": "sky130_fd_sc_ls",
-    "lp": "sky130_fd_sc_lp",
-}
+DEFAULT_CONFIG = (
+    PROJECT_ROOT
+    / "configs"
+    / "sky130.py"
+)
 
 # ============================================================
-# PVT CORNERS
+# LOAD TECHNOLOGY CONFIGURATION
 # ============================================================
 
-PROCESSES = {
-    "tt": ["hs", "hd", "hdll", "ms", "ls"],
-    "ss": ["hs", "hd", "hdll", "ms", "ls", "lp"],
-    "ff": ["hs", "hd", "hdll", "ms", "ls", "lp"],
-}
+def load_config(config_file):
 
+    config_file = Path(config_file).resolve()
 
-def build_corners():
+    if not config_file.exists():
+        raise FileNotFoundError(
+            f"Configuration file not found: {config_file}"
+        )
 
-    corners = {}
+    spec = importlib.util.spec_from_file_location(
+        "timing_config",
+        config_file
+    )
 
-    for process, library_types in PROCESSES.items():
+    if spec is None or spec.loader is None:
+        raise RuntimeError(
+            f"Could not load configuration: {config_file}"
+        )
 
-        for library_type in library_types:
+    module = importlib.util.module_from_spec(spec)
 
-            library = LIBRARIES[library_type]
+    spec.loader.exec_module(module)
 
-            corner_name = f"{library_type}_{process}"
+    if not hasattr(module, "CORNERS"):
+        raise RuntimeError(
+            f"Configuration does not define CORNERS: "
+            f"{config_file}"
+        )
 
-            corners[corner_name] = {
-                "library": library,
-                "process": process,
-                "patterns": [
-                    f"*{library}__{process}_*.lib"
-                ],
-            }
-
-    return corners
-
-
-CORNERS = build_corners()
-
+    return module.CORNERS
 
 # ============================================================
 # RUN COMMAND
@@ -138,28 +111,6 @@ def run_command(command, log_file=None):
 
     return ""
 
-
-# ============================================================
-# FIND LIBERTY FILE
-# ============================================================
-
-def find_library(patterns):
-
-    matches = []
-
-    for pattern in patterns:
-
-        matches.extend(
-            LIB_ROOT.rglob(pattern)
-        )
-
-    matches = sorted(set(matches))
-
-    if not matches:
-
-        return None
-
-    return matches[0]
 
 
 # ============================================================
@@ -462,14 +413,15 @@ def run_corner(
     print("#" * 70)
 
     # --------------------------------------------------------
-    # Find Liberty
+    # Get Liberty
     # --------------------------------------------------------
 
-    liberty = find_library(
-        config["patterns"]
-    )
+    liberty = config.get("liberty")
 
-    if liberty is None:
+    if liberty is not None:
+        liberty = Path(liberty)
+
+    if liberty is None or not liberty.is_file():
 
         print(
             f"ERROR: Could not find Liberty for {corner}"
@@ -687,30 +639,38 @@ def write_csv(results, output_dir):
     return csv_file
 
 def parse_arguments():
+
     parser = argparse.ArgumentParser(
-        description="Generic RTL Sky130 PVT Timing Analysis"
+        description="Generic RTL timing analysis flow"
     )
 
     parser.add_argument(
-    "--rtl",
-    type=Path,
-    nargs="+",
-    required=True,
-    help="RTL/SystemVerilog source file(s)"
-)
+        "--rtl",
+        type=Path,
+        nargs="+",
+        required=True,
+        help="RTL/SystemVerilog source file(s)"
+    )
 
     parser.add_argument(
         "--top",
         type=str,
-        default=TOP_MODULE,
+        required=True,
         help="Top-level RTL module"
     )
 
     parser.add_argument(
         "--sdc",
         type=Path,
-        default=SDC_FILE,
+        required=True,
         help="SDC constraints file"
+    )
+
+    parser.add_argument(
+        "--config",
+        type=Path,
+        default=DEFAULT_CONFIG,
+        help="Technology configuration file"
     )
 
     parser.add_argument(
@@ -816,6 +776,10 @@ def main():
 
     args = parse_arguments()
 
+    corners = load_config(
+        args.config
+    )
+
     rtl_files = [
         rtl_file.resolve()
         for rtl_file in args.rtl
@@ -842,10 +806,6 @@ def main():
             f"SDC file not found: {base_sdc_file}"
         )
 
-    if not LIB_ROOT.exists():
-        raise FileNotFoundError(
-            f"Liberty root not found: {LIB_ROOT}"
-        )
 
     clock_periods = get_clock_periods(args)
 
@@ -889,7 +849,7 @@ def main():
 
         results = []
 
-        for corner, config in CORNERS.items():
+        for corner, config in corners.items():
             result = run_corner(
             corner,
             config,

@@ -1,443 +1,594 @@
-# Generic RTL Timing Analysis Framework
+# RTL Timing Analysis Framework
 
-A reusable RTL timing-analysis framework using Yosys, OpenSTA, Sky130 standard-cell libraries, and Python 3.
+A reusable RTL timing-analysis framework using **Yosys** for synthesis and **OpenSTA** for static timing analysis.
+
+The framework is designed to work with different RTL designs and different standard-cell libraries. Technology-specific information is kept in configuration files rather than being built into the timing engine.
+
+---
+
+## Features
+
+* SystemVerilog / Verilog RTL support
+* Multiple RTL source files
+* Configurable top-level module
+* SDC timing constraints
+* Multiple standard-cell libraries
+* Multiple PVT/corner configurations
+* Arbitrary Liberty (`.lib`) file locations
+* Sky130 automatic library discovery
+* Multiple clock-period analysis
+* Timing reports from OpenSTA
+* Worst slack and TNS analysis
+* Per-clock-period summaries
+* Fmax calculation when multiple clock periods are analyzed
+* Clean handling of failed library configurations
+
+---
 
 ## Project Structure
 
 ```text
-alu_8/
-├── rtl/
-│   └── <user RTL files>
-├── constraints/
-│   └── <user SDC files>
+rtl-timing-analysis/
+├── .gitignore
+├── README.md
+│
 ├── examples/
-│   └── <example designs>
+│   ├── alu_8.sv
+│   ├── alu_8.sdc
+│   ├── alu_8_test.v
+│   ├── counter.sv
+│   ├── counter.sdc
+│   ├── adder.sv
+│   ├── multi_top.sv
+│   └── multi_top.sdc
+│
 ├── scripts/
 │   ├── timing_flow.py
 │   ├── analyze_timing.py
 │   └── summarize_timing.py
-├── reports/
-├── results/
-└── run.py
+│
+├── configs/
+│   ├── sky130.py
+│   └── example.py
+│
+├── run.py
+│
+├── results/       # generated timing data
+└── reports/       # generated analysis reports
 ```
 
-Users should place their Verilog/SystemVerilog source files in `rtl/` and their SDC constraint files in `constraints/`.
+`results/` and `reports/` are generated automatically and are ignored by Git.
 
-Both `.sv` and `.v` RTL files are supported.
+---
 
-## Required Inputs
+# 1. Requirements
 
-For each design, provide:
+Install the following tools:
 
-1. One or more RTL source files.
-2. The name of the top-level RTL module.
-3. An SDC constraints file.
+* Python 3
+* Yosys
+* OpenSTA
+
+Verify the installations:
+
+```bash
+python3 --version
+yosys -V
+sta -version
+```
+
+The framework calls `yosys` and `sta` from the system `PATH`.
+
+---
+
+# 2. Clone the Repository
+
+Clone the repository:
+
+```bash
+git clone https://github.com/Saadyu/rtl-timing-analysis.git
+cd rtl-timing-analysis
+```
+
+---
+
+# 3. Provide RTL
+
+Place your RTL source files in a convenient location.
 
 For example:
 
 ```text
-rtl/
-├── cpu.sv
-├── alu.sv
-└── register_file.sv
-
-constraints/
-└── cpu.sdc
+examples/
+└── alu_8.sv
 ```
 
-If the top-level module is:
+A design may contain multiple RTL files.
 
-```systemverilog
-module cpu (...);
-```
-
-the top name is `cpu`.
-
-A basic SDC clock constraint is:
-
-```tcl
-create_clock -name clk -period 5.0 [get_ports clk]
-```
-
-Add input/output timing constraints as required by the design.
-
-## Running the Flow
-
-The main entry point is:
+Example:
 
 ```bash
-python3 run.py
+python3 run.py \
+    --rtl examples/module_a.sv examples/module_b.sv \
+    --top my_top \
+    --sdc examples/my_top.sdc
 ```
 
-### Single RTL file
+The `--top` argument must identify the top-level RTL module.
 
-```bash
-python3 run.py     --rtl rtl/cpu.sv     --top cpu     --sdc constraints/cpu.sdc
-```
+---
 
-### Multiple RTL files
+# 4. Provide an SDC File
 
-```bash
-python3 run.py     --rtl rtl/cpu.sv rtl/alu.sv rtl/register_file.sv     --top cpu     --sdc constraints/cpu.sdc
-```
-
-The RTL files are synthesized together using the specified top-level module.
-
-## Clock Periods
-
-If no period option is supplied, the flow analyzes:
-
-```text
-2 ns
-4 ns
-```
-
-### One specific period
-
-```bash
-python3 run.py     --rtl rtl/cpu.sv     --top cpu     --sdc constraints/cpu.sdc     --clock-period 5
-```
-
-### Multiple specific periods
-
-```bash
-python3 run.py     --rtl rtl/cpu.sv     --top cpu     --sdc constraints/cpu.sdc     --clock-periods 2 3 4 5 8
-```
-
-`--clock-period` and `--clock-periods` cannot be used together. All periods must be greater than zero.
-
-## SDC Clock-Period Override
-
-The supplied SDC is used as the base constraint file.
-
-When a clock period is specified on the command line, the flow creates a run-specific SDC and replaces the period in the `create_clock` constraint. The original SDC is not modified.
+The framework uses an SDC file to define timing constraints.
 
 For example:
 
 ```tcl
-create_clock -name clk -period 5.0 [get_ports clk]
+create_clock -name clk -period 2.0 [get_ports clk]
+
+set_input_delay -clock clk 0 [get_ports {a b opcode}]
+
+set_output_delay -clock clk 0 [get_ports {y carry}]
 ```
 
-with:
+Example file:
+
+```text
+examples/alu_8.sdc
+```
+
+The SDC file is passed using:
 
 ```bash
---clock-period 2
+--sdc examples/alu_8.sdc
 ```
 
-produces a run-specific constraint using:
+---
 
-```tcl
-create_clock -name clk -period 2 [get_ports clk]
-```
+# 5. Configure the Standard-Cell Library
 
-## Synthesis and Timing Flow
+This framework does not require a particular standard-cell library directory structure.
 
-For each configured timing corner, the framework performs:
+The important requirement is that you have compatible Liberty files and provide their paths through a configuration file.
+
+There are two configuration approaches.
+
+---
+
+## Option A: Generic Library Configuration
+
+Use this approach when working with an arbitrary standard-cell library.
+
+Start with:
 
 ```text
-RTL
- ↓
-Yosys hierarchy checking
- ↓
-Synthesis
- ↓
-Flattening
- ↓
-Optimization
- ↓
-DFF technology mapping
- ↓
-ABC technology mapping
- ↓
-Gate-level netlist
- ↓
-OpenSTA
+configs/example.py
 ```
 
-Multiple RTL source files are read together and synthesized using the specified top module.
+A configuration looks like:
 
-## PVT Analysis
+```python
+from pathlib import Path
 
-The current configuration analyzes Sky130 standard-cell library/process combinations using:
+
+CORNERS = {
+
+    "typical": {
+        "library": "my_library",
+        "process": "tt",
+        "liberty": Path(
+            "/path/to/typical.lib"
+        ),
+    },
+
+    "slow": {
+        "library": "my_library",
+        "process": "ss",
+        "liberty": Path(
+            "/path/to/slow.lib"
+        ),
+    },
+
+    "fast": {
+        "library": "my_library",
+        "process": "ff",
+        "liberty": Path(
+            "/path/to/fast.lib"
+        ),
+    },
+
+}
+```
+
+The paths can point to Liberty files anywhere on the system.
+
+The framework does **not** require:
 
 ```text
-Library families:
-hs, hd, hdll, ms, ls, lp
-
-Processes:
-tt, ss, ff
+share/pdk/
+libs.ref/
 ```
 
-The current configuration contains 17 valid PVT corners.
+or any other particular directory structure.
 
-For each corner, the flow records:
+It also does not require the corners to be named `tt`, `ss`, and `ff`. Those names are simply examples.
 
-- library
-- process
-- clock period
-- worst slack
-- total negative slack
-- timing status
-- worst startpoint
-- worst endpoint
+For example, a library could instead define:
 
-## Results
+```python
+CORNERS = {
 
-Intermediate timing-flow data is stored under:
+    "nominal": {
+        "library": "my_cells",
+        "process": "nominal",
+        "liberty": Path("/libs/nominal.lib"),
+    },
+
+    "hot": {
+        "library": "my_cells",
+        "process": "hot",
+        "liberty": Path("/libs/hot.lib"),
+    },
+
+}
+```
+
+The number of corners is also configurable.
+
+---
+
+# 6. Sky130 Configuration
+
+For Sky130, the repository includes:
+
+```text
+configs/sky130.py
+```
+
+This configuration understands the Sky130 PDK directory structure and automatically discovers compatible Liberty files.
+
+If the Sky130 PDK is installed and `PDK_ROOT` is configured, the default configuration can be used without specifying `--config`.
+
+For example:
+
+```bash
+python3 run.py \
+    --rtl examples/alu_8.sv \
+    --top alu_8 \
+    --sdc examples/alu_8.sdc
+```
+
+The Sky130 configuration is a convenience configuration. The timing engine itself is not tied to Sky130.
+
+---
+
+# 7. Run Timing Analysis
+
+Basic command:
+
+```bash
+python3 run.py \
+    --rtl examples/alu_8.sv \
+    --top alu_8 \
+    --sdc examples/alu_8.sdc \
+    --config configs/example.py
+```
+
+When no clock-period option is supplied, the framework analyzes its default clock periods.
+
+---
+
+# 8. Analyze a Single Clock Period
+
+Use:
+
+```bash
+python3 run.py \
+    --rtl examples/alu_8.sv \
+    --top alu_8 \
+    --sdc examples/alu_8.sdc \
+    --config configs/example.py \
+    --clock-period 2
+```
+
+This analyzes the design at a 2 ns clock period.
+
+---
+
+# 9. Analyze Multiple Clock Periods
+
+To explicitly select the periods:
+
+```bash
+python3 run.py \
+    --rtl examples/alu_8.sv \
+    --top alu_8 \
+    --sdc examples/alu_8.sdc \
+    --config configs/example.py \
+    --clock-periods 2 3 4 5 8
+```
+
+Multiple periods allow the framework to analyze timing behavior across different clock requirements.
+
+They also allow Fmax to be calculated.
+
+---
+
+# 10. Understanding the Results
+
+Generated results are stored under:
+
+```text
+results/<design>/
+```
+
+For example:
 
 ```text
 results/
-```
-
-Results are organized by design and clock period:
-
-```text
-results/
-└── cpu/
+└── alu_8/
     ├── 2ns/
     └── 4ns/
 ```
 
-A repeated run for a particular design and clock period clears that period's existing result directory before generating new data. Other designs and other period directories are preserved.
+Each run contains generated Yosys scripts, synthesized netlists, OpenSTA scripts, logs, and timing reports.
 
-## Reports
-
-Processed reports are stored under:
+The higher-level analysis is stored under:
 
 ```text
-reports/
+reports/<design>/
 ```
 
 For example:
 
 ```text
 reports/
-└── cpu/
+└── alu_8/
     ├── timing_analysis.csv
     └── timing_summary.txt
 ```
 
-### timing_analysis.csv
+---
 
-Contains timing results for the analyzed PVT corners, including:
+# 11. Timing Summary
 
-```text
-corner
-library
-process
-clock_period_ns
-slack_ns
-tns_ns
-status
-startpoint
-endpoint
-```
+The final summary includes:
 
-### timing_summary.txt
-
-Contains a human-readable summary of:
-
-- worst slack
-- worst-slack corner
-- worst timing-path startpoint and endpoint
-- worst TNS
-- number of MET corners
-- number of violating corners
-- timing results per clock period
-- calculated Fmax when at least two periods are available
-
-## Understanding Slack
-
-```text
-positive slack → timing requirement is met
-zero slack     → timing requirement is exactly met
-negative slack → timing violation
-```
-
-For example:
-
-```text
-Slack = +1.25 ns
-```
-
-means the path has 1.25 ns of timing margin.
-
-```text
-Slack = -2.50 ns
-```
-
-means the path violates the timing requirement by 2.50 ns.
-
-## Understanding TNS
-
-TNS means Total Negative Slack.
-
-```text
-TNS = 0
-```
-
-means there is no negative slack.
-
-A negative TNS indicates that one or more timing paths violate their requirements.
-
-## Fmax Calculation
-
-When multiple clock periods are analyzed, the framework derives an estimated maximum operating frequency from the STA results.
-
-For a timing result:
-
-```text
-Clock period = T
-Slack = S
-```
-
-the implied critical path delay is:
-
-```text
-Critical delay = T - S
-```
-
-The corresponding frequency is:
-
-```text
-Fmax = 1000 / Critical delay
-```
-
-when the critical delay is in nanoseconds and Fmax is in MHz.
+* Worst slack
+* Worst TNS
+* Timing status
+* Number of passing corners
+* Number of violating corners
+* Results for each clock period
+* Fmax when multiple periods are available
 
 Example:
 
 ```text
-Clock period = 4 ns
-Worst slack  = -3.79 ns
+Worst Slack
+----------------------------------------------------------------------
+Clock period : 2.0 ns
+Corner       : slow
+Slack        : -5.79 ns
 
-Critical delay = 4 - (-3.79)
-               = 7.79 ns
+Worst TNS
+----------------------------------------------------------------------
+Clock period : 2.0 ns
+Corner       : slow
+TNS          : -26.11 ns
 
-Fmax = 1000 / 7.79
-     ≈ 128.37 MHz
+Timing Status
+----------------------------------------------------------------------
+MET          : 3
+VIOLATED     : 3
+TOTAL        : 6
 ```
 
-This Fmax is calculated from the existing STA results and does not require an additional synthesis/STA run at the calculated critical period.
+A negative slack indicates a timing violation for that analyzed constraint.
 
-At least two analyzed clock periods are required by the reporting flow for Fmax calculation.
+---
 
-## Generic Workflow for a New Design
+# 12. Fmax Analysis
 
-### 1. Add RTL
-
-Put all source files in:
-
-```text
-rtl/
-```
+When at least two clock periods are analyzed, the framework calculates a critical period and corresponding Fmax.
 
 For example:
 
 ```text
-rtl/
-├── top.sv
-├── datapath.sv
-└── controller.sv
+Fmax Analysis
+----------------------------------------------------------------------
+STA periods used             : 2
+Calculated critical period  : 7.79 ns
+Calculated Fmax             : 128.37 MHz
 ```
 
-### 2. Add constraints
+If only one clock period is analyzed, Fmax is not calculated because there are not enough timing points for the framework's current Fmax analysis.
 
-Put the SDC file in:
+---
+
+# 13. Failed Library Configurations
+
+If a Liberty file cannot be found, the framework reports:
 
 ```text
-constraints/
+ERROR: Could not find Liberty for typical
 ```
+
+and records:
+
+```text
+LIBRARY NOT FOUND
+```
+
+The remaining corners can still be processed.
+
+If all configured corners fail, the framework exits cleanly and reports:
+
+```text
+No valid timing results were found.
+
+All analyzed corners failed before timing analysis could be performed.
+```
+
+This prevents stale results from previous runs from being mistaken for results from the current configuration.
+
+---
+
+# 14. Main Components
+
+### `run.py`
+
+Top-level entry point.
+
+It:
+
+1. Validates inputs.
+2. Selects clock periods.
+3. Runs the timing engine.
+4. Runs timing analysis.
+5. Generates the final summary.
+
+### `scripts/timing_flow.py`
+
+Technology-independent timing engine.
+
+It:
+
+1. Loads the selected configuration.
+2. Reads the RTL.
+3. Synthesizes the design using Yosys.
+4. Generates the OpenSTA input.
+5. Runs OpenSTA.
+6. Extracts timing results.
+
+### `scripts/analyze_timing.py`
+
+Collects timing results from generated runs and produces:
+
+```text
+timing_analysis.csv
+```
+
+### `scripts/summarize_timing.py`
+
+Processes the analyzed timing data and generates:
+
+```text
+timing_summary.txt
+```
+
+### `configs/sky130.py`
+
+Sky130-specific configuration and Liberty discovery.
+
+### `configs/example.py`
+
+Generic configuration template for arbitrary standard-cell libraries.
+
+---
+
+# 15. Using a Different Standard-Cell Library
+
+For a new library:
+
+1. Obtain the Liberty files.
+2. Copy `configs/example.py`.
+3. Change the Liberty paths.
+4. Define the corners you want to analyze.
+5. Run `run.py` with that configuration.
 
 For example:
 
-```text
-constraints/top.sdc
+```bash
+cp configs/example.py configs/my_library.py
 ```
 
-### 3. Identify the top module
-
-If the top-level module is:
-
-```systemverilog
-module top (...);
-```
-
-use:
+Edit:
 
 ```text
---top top
+configs/my_library.py
 ```
 
-### 4. Run
+Then run:
 
 ```bash
-python3 run.py     --rtl rtl/top.sv rtl/datapath.sv rtl/controller.sv     --top top     --sdc constraints/top.sdc
+python3 run.py \
+    --rtl my_design.sv \
+    --top my_design \
+    --sdc my_design.sdc \
+    --config configs/my_library.py
 ```
 
-### 5. Inspect reports
+No changes to `scripts/timing_flow.py` are required simply because the standard-cell library is different.
+
+---
+
+# 16. Design Independence
+
+The timing engine is intended to be reusable across different RTL designs.
+
+The user supplies:
 
 ```text
-reports/top/timing_summary.txt
-reports/top/timing_analysis.csv
+RTL
+ │
+ ├── top module
+ │
+ ├── SDC constraints
+ │
+ └── standard-cell Liberty configuration
 ```
 
-## Design Requirements
-
-The supplied design should have:
-
-- synthesizable Verilog/SystemVerilog
-- a valid top-level module
-- valid module hierarchy
-- an SDC file containing the required timing constraints
-- a clock constraint for sequential timing analysis
-
-The module specified with `--top` must exist in the supplied RTL files.
-
-## Command Reference
-
-### Default analysis
-
-```bash
-python3 run.py     --rtl rtl/<design>.sv     --top <top_module>     --sdc constraints/<design>.sdc
-```
-
-### Single period
-
-```bash
-python3 run.py     --rtl rtl/<design>.sv     --top <top_module>     --sdc constraints/<design>.sdc     --clock-period <period_ns>
-```
-
-### Multiple periods
-
-```bash
-python3 run.py     --rtl rtl/<design>.sv     --top <top_module>     --sdc constraints/<design>.sdc     --clock-periods <period1> <period2> <period3>
-```
-
-### Multiple RTL files
-
-```bash
-python3 run.py     --rtl rtl/file1.sv rtl/file2.sv rtl/file3.v     --top <top_module>     --sdc constraints/<design>.sdc
-```
-
-## Summary
-
-The intended user workflow is:
+The framework then performs:
 
 ```text
-Put RTL in rtl/
-        +
-Put SDC in constraints/
-        +
-Specify the top module
-        ↓
-Run run.py
-        ↓
-Yosys synthesis + technology mapping
-        ↓
-OpenSTA PVT timing analysis
-        ↓
-CSV + human-readable reports
+RTL
+ ↓
+Yosys synthesis
+ ↓
+Technology-mapped netlist
+ ↓
+OpenSTA
+ ↓
+Timing reports
+ ↓
+Timing analysis
+ ↓
+Summary / Fmax
 ```
 
-The Python scripts in `scripts/` implement the flow so that users normally do not need to modify them for each new RTL design.
+The technology-specific information belongs in the configuration file rather than in the timing engine.
+
+---
+
+# 17. Example
+
+For the included 8-bit ALU:
+
+```bash
+python3 run.py \
+    --rtl examples/alu_8.sv \
+    --top alu_8 \
+    --sdc examples/alu_8.sdc \
+    --config configs/example.py \
+    --clock-periods 2 4
+```
+
+The resulting reports can be found under:
+
+```text
+reports/alu_8/
+```
+
+and detailed generated timing data under:
+
+```text
+results/alu_8/
+```
+
+---
+
+## License
+
+Add the project's license information here when a license is selected.

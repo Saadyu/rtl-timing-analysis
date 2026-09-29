@@ -32,10 +32,19 @@ def load_results(input_file):
             f"No timing results found in {input_file}"
         )
 
+    valid_rows = []
+
     for row in rows:
+
         row["clock_period_ns"] = float(
             row["clock_period_ns"]
         )
+
+        if row["status"] not in {
+            "MET",
+            "VIOLATED",
+        }:
+            continue
 
         row["slack_ns"] = float(
             row["slack_ns"]
@@ -45,7 +54,9 @@ def load_results(input_file):
             row["tns_ns"]
         )
 
-    return rows
+        valid_rows.append(row)
+
+    return valid_rows
 
 
 def analyze_fmax(rows):
@@ -119,6 +130,53 @@ def main():
     rows = load_results(
         input_file
     )
+
+    if not rows:
+
+        report = []
+
+        report.append("=" * 70)
+        report.append("TIMING ANALYSIS SUMMARY")
+        report.append("=" * 70)
+        report.append("")
+        report.append(
+            f"Design : {args.design}"
+        )
+        report.append("")
+        report.append(
+            "No valid timing results were found."
+        )
+        report.append("")
+        report.append(
+            "All analyzed corners failed before "
+            "timing analysis could be performed."
+        )
+        report.append("")
+        report.append(
+            "Check the timing analysis CSV for "
+            "the failure status of each corner."
+        )
+
+        report_text = "\n".join(report)
+
+        print()
+        print(report_text)
+
+        SUMMARY_DIR.mkdir(
+            parents=True,
+            exist_ok=True
+        )
+
+        summary_file = (
+            design_report_dir
+            / "timing_summary.txt"
+        )
+
+        summary_file.write_text(
+            report_text + "\n"
+        )
+
+        return
 
     worst_slack = min(
         rows,

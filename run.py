@@ -2,9 +2,15 @@ import argparse
 import subprocess
 import sys
 from pathlib import Path
-
+import shutil
 
 PROJECT_ROOT = Path(__file__).resolve().parent
+
+DEFAULT_CONFIG = (
+    PROJECT_ROOT
+    / "configs"
+    / "sky130.py"
+)
 
 TIMING_FLOW = (
     PROJECT_ROOT
@@ -54,10 +60,17 @@ def parse_arguments():
     )
 
     parser.add_argument(
+        "--config",
+        type=Path,
+        default=DEFAULT_CONFIG,
+        help="Technology configuration file"
+    )
+
+    parser.add_argument(
         "--clock-period",
         type=float,
         default=None,
-        help="Single clock period in ns"
+        help="Optional clock period override in ns"
     )
 
     parser.add_argument(
@@ -65,19 +78,10 @@ def parse_arguments():
         type=float,
         nargs="+",
         default=None,
-        help="Clock periods to analyze in ns"
+        help="Optional list of clock periods to analyze in ns"
     )
 
     args = parser.parse_args()
-
-    if (
-        args.clock_period is not None
-        and args.clock_periods is not None
-    ):
-        parser.error(
-            "use either --clock-period "
-            "or --clock-periods, not both"
-        )
 
     if args.clock_period is not None:
         if args.clock_period <= 0:
@@ -94,8 +98,16 @@ def parse_arguments():
                 "all clock periods must be greater than 0"
             )
 
-    return args
+    if (
+        args.clock_period is not None
+        and args.clock_periods is not None
+    ):
+        parser.error(
+            "use either --clock-period "
+            "or --clock-periods, not both"
+        )
 
+    return args
 
 def run_command(command):
 
@@ -122,11 +134,32 @@ def main():
 
     args = parse_arguments()
 
+    design_name = args.top
+
+    results_dir = (
+        PROJECT_ROOT
+        / "results"
+        / design_name
+    )
+
+    reports_dir = (
+        PROJECT_ROOT
+        / "reports"
+        / design_name
+    )
+
+    if results_dir.exists():
+        shutil.rmtree(results_dir)
+
+    if reports_dir.exists():
+        shutil.rmtree(reports_dir)
+
     rtl_files = [
         rtl_file.resolve()
         for rtl_file in args.rtl
     ]
     sdc_file = args.sdc.resolve()
+    config_file = args.config.resolve()
 
     for rtl_file in rtl_files:
         if not rtl_file.exists():
@@ -137,6 +170,11 @@ def main():
     if not sdc_file.exists():
         raise FileNotFoundError(
             f"SDC file not found: {sdc_file}"
+        )
+    
+    if not config_file.exists():
+        raise FileNotFoundError(
+            f"Configuration file not found: {config_file}"
         )
 
     if not TIMING_FLOW.exists():
@@ -187,7 +225,10 @@ def main():
             args.top,
             "--sdc",
             str(sdc_file),
+            "--config",
+            str(config_file),
         ])
+        
         if period is not None:
             command.extend([
                 "--clock-period",
@@ -195,8 +236,6 @@ def main():
             ])
 
         run_command(command)
-
-    design_name = args.top
 
     run_command([
         sys.executable,
