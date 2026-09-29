@@ -1,0 +1,20 @@
+# Generated timing results
+results/
+reports/
+
+# Temporary files
+temp.txt
+*.tmp
+
+# Python
+__pycache__/
+*.pyc
+
+# Simulation / waveform files
+*.vcd
+
+# Logs
+*.log
+
+# Windows metadata
+*:Zone.Identifier
